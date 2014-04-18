@@ -24,8 +24,8 @@ following properties:
 Use -f FILE to read the tree from FILE.
 Use -r N to generate a random tree with N random leaves.
 
-Writes results to three files, <OUTPUT>.tree, <OUTPUT>.clusters and
-<OUTPUT>.sequences.
+Writes results to five files, <OUTPUT>.tree, <OUTPUT>.clusters,
+<OUTPUT>.sequences, <OUTPUT>.dist, and <OUTPUT>.distt.
 
 <OUTPUT>.tree contains an ascii diagram of the Newick tree with all
 internal nodes labeled. The labels correspond to cluster IDs in the
@@ -37,9 +37,19 @@ other two files.
 <OUTPUT>.sequences contains one line per sequence (for sequences
 within qualifying clusters):
 * <cluster ID> <sequence name>
+
+<OUTPUT>.dist and .distt contain inter-leaf distances. The .dist file
+contains inter-leaf distances for all non-leaf nodes. The .distt file
+contains inter-leaf distances only for those non-leaf nodes whose
+support value exceeds the user-supplied SUPPORT threshold.
 '''
 
 VERBOSE = 0
+
+# Newick tree node feature names.
+MEAN_LEAF_DIST = 'mean_leaf_dist'
+NUM_LEAVES = 'num_leaves'
+TOT_DIST_TO_LEAVES = 'tot_dist_to_leaves'
 
 def Log(level, msg):
   '''Prints message if verbosity level is appropriate.'''
@@ -65,8 +75,8 @@ class VerboseTree(Tree):        # pylint: disable=R0904
     if show_internal:
       descr += (':S%0.2f' % self.support)
       descr += (':D%0.2f' % self.dist)
-      if hasattr(self, 'mean_leaf_dist'):
-        descr += (':M%0.2f' % getattr(self, 'mean_leaf_dist'))
+      if hasattr(self, MEAN_LEAF_DIST):
+        descr += (':M%0.2f' % getattr(self, MEAN_LEAF_DIST))
     if not self.is_leaf():
       mids = []
       result = []
@@ -127,6 +137,36 @@ def PrintTree(tree, outfile):
     Fatal('Could not write to ' + fname)
     
 
+def PrintDistances(tree, support_thresh, outfile):
+  '''Prints mean inter-leaf distances to two files, <outfile>.dist and
+  <outfile>.distt. The former contains inter-leaf distances of all
+  non-leaf nodes; the latter contains inter-leaf distances only for
+  nodes that meet the threshold criterion given by support_thresh.
+
+  Requires that tree nodes have been annotated with mean_leaf_dist
+  attributes.
+  '''
+  def printDistInternal(node, dist, distt):
+    if node.is_leaf():
+      return
+    if not hasattr(node, MEAN_LEAF_DIST):
+      return
+    dist.write(str(node.mean_leaf_dist) + '\n')
+    if node.support > support_thresh:
+      distt.write(str(node.mean_leaf_dist) + '\n')
+    for c in node.get_children():
+      printDistInternal(c, dist, distt)
+
+  fname1, fname2 = outfile + '.dist', outfile + '.distt'
+  try:
+    f1, f2 = open(fname1, 'w'), open(fname2, 'w')
+    printDistInternal(tree, f1, f2)
+    f1.close()
+    f2.close()
+  except IOError:
+    Fatal('Could not write to ' + fname1 + ' or ' + fname2)
+
+
 def PrintClusters(nodes, outfile):
   '''Given nodes, a list of nodes (cluster roots), prints
   <outfile>.clusters as specified in USAGE.
@@ -183,10 +223,9 @@ def ComputeMeanInterleafDistance(node):
           leaves[i].get_distance(leaves[j]))
         Log(2, "Computing from scratch")
       tot_dist += dist_from_i_to_j
-  node.add_feature('mean_leaf_dist',
+  node.add_feature(MEAN_LEAF_DIST,
                    (tot_dist / (len(leaves) * (len(leaves) - 1) / 2)))
   return node.mean_leaf_dist
-
 
 def NodesWithSupportAndDistance(node, support_thresh, distance_thresh):
   '''If node's support exceeds support_thresh, and if node's mean
@@ -198,8 +237,8 @@ def NodesWithSupportAndDistance(node, support_thresh, distance_thresh):
   '''
   Log(2, "Computing NodesWithSupportAndDistance")
   if node.support > support_thresh and not node.is_leaf():
-    if hasattr(node, 'mean_leaf_dist'):
-      d = getattr(node, 'mean_leaf_dist')
+    if hasattr(node, MEAN_LEAF_DIST):
+      d = getattr(node, MEAN_LEAF_DIST)
     else:
       d = ComputeMeanInterleafDistance(node)
     if d < distance_thresh:
@@ -212,7 +251,7 @@ def NodesWithSupportAndDistance(node, support_thresh, distance_thresh):
 
 
 def ComputeInterleafDistance(tree):
-  '''Annotates each node in tree with the mean interleaf distance of the
+  '''Annotates each node in tree with the mean inter-leaf distance of the
   cluster rooted at that node.'''
 
   for node in tree.traverse(strategy='postorder'):
@@ -220,13 +259,13 @@ def ComputeInterleafDistance(tree):
     tot_dist_to_leaves = 0
     mean_leaf_dist = 0
     for c in node.children:     # Leaves have no children.
-      num_leaves += getattr(c, 'num_leaves')
-      tot_dist_to_leaves += (c.dist * getattr(c, 'num_leaves') +
-                             getattr(c, 'tot_dist_to_leaves'))
+      num_leaves += getattr(c, NUM_LEAVES)
+      tot_dist_to_leaves += (c.dist * getattr(c, NUM_LEAVES) +
+                             getattr(c, TOT_DIST_TO_LEAVES))
     mean_leaf_dist = (tot_dist_to_leaves / num_leaves) * 2
-    node.add_feature('num_leaves', num_leaves)
-    node.add_feature('tot_dist_to_leaves', tot_dist_to_leaves)
-    node.add_feature('mean_leaf_dist', mean_leaf_dist)
+    node.add_feature(NUM_LEAVES, num_leaves)
+    node.add_feature(TOT_DIST_TO_LEAVES, tot_dist_to_leaves)
+    node.add_feature(MEAN_LEAF_DIST, mean_leaf_dist)
 
 
 def ProcessTree(tree, quick, support_thresh, distance_thresh, outfile):
@@ -246,6 +285,7 @@ def ProcessTree(tree, quick, support_thresh, distance_thresh, outfile):
     ComputeInterleafDistance(tree)
   nodes = NodesWithSupportAndDistance(tree, support_thresh, distance_thresh)
   PrintTree(tree, outfile)
+  PrintDistances(tree, support_thresh, outfile)
   PrintClusters(nodes, outfile)
   PrintSequences(nodes, outfile)
 
